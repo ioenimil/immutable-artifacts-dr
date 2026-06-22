@@ -1,0 +1,52 @@
+# Terraform
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.backup
+# *.tfvars may contain secrets; use TF_VAR_* env vars for sensitive values
+*.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+crash.log
+crash.*.log
+
+# Keep the lockfile — it pins provider versions for reproducibility
+!.terraform.lock.hcl
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Docker / environment
+*.env
+.env
+.env.*
+!.env.example
+
+# Secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
