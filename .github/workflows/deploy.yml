@@ -1,0 +1,162 @@
+name: Deploy — ECS Fargate
+
+on:
+  workflow_run:
+    workflows: ["CI — Build, Scan & Push"]
+    types: [completed]
+    branches: [main]
+
+  # Manual prod deploy trigger
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag (git SHA) to promote to production"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  ECS_CLUSTER: fincorp-cluster
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Dev — automatic deploy on CI success
+  # ---------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    # Only run when triggered by a successful CI workflow_run
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success'
+
+    env:
+      ECR_REPO: fincorp-api-dev
+      ECS_SERVICE: fincorp-api-dev
+      TASK_FAMILY: fincorp-api-dev
+      CONTAINER_NAME: fincorp-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image tag from triggering CI run
+        id: tag
+        run: |
+          # The git SHA of the commit that triggered the CI run
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          SHORT="${SHA:0:7}"
+          IMAGE_URI="${{ steps.ecr_login.outputs.registry }}/${ECR_REPO}:${SHORT}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "Deploying image: ${IMAGE_URI}"
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${TASK_FAMILY}" \
+            --query taskDefinition \
+            > task-def.json
+
+      - name: Render new task definition with updated image
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.tag.outputs.image_uri }}
+
+      - name: Deploy to ECS (dev)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  # ---------------------------------------------------------------------------
+  # Prod — manual gate via GitHub Environment protection rules
+  # ---------------------------------------------------------------------------
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production   # requires reviewer approval in GitHub Environments
+    # Only run on manual workflow_dispatch
+    if: github.event_name == 'workflow_dispatch'
+
+    env:
+      ECR_REPO_DEV: fincorp-api-dev
+      ECR_REPO_PROD: fincorp-api-prod
+      ECS_SERVICE: fincorp-api-prod
+      TASK_FAMILY: fincorp-api-prod
+      CONTAINER_NAME: fincorp-api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Promote image from dev to prod ECR (same SHA, no rebuild)
+        id: promote
+        env:
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          DEV_URI="${REGISTRY}/${ECR_REPO_DEV}:${TAG}"
+          PROD_URI="${REGISTRY}/${ECR_REPO_PROD}:${TAG}"
+
+          echo "Pulling ${DEV_URI}..."
+          docker pull "${DEV_URI}"
+
+          echo "Tagging as ${PROD_URI}..."
+          docker tag "${DEV_URI}" "${PROD_URI}"
+
+          echo "Pushing ${PROD_URI}..."
+          docker push "${PROD_URI}"
+
+          echo "image_uri=${PROD_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Download current prod task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${TASK_FAMILY}" \
+            --query taskDefinition \
+            > task-def.json
+
+      - name: Render new task definition with updated image
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.promote.outputs.image_uri }}
+
+      - name: Deploy to ECS (prod)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
