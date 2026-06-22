@@ -1,0 +1,115 @@
+name: CI — Build, Scan & Push
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write   # required for OIDC token exchange
+  contents: read
+
+env:
+  AWS_REGION: eu-west-1
+  CODEARTIFACT_DOMAIN: fincorp
+  CODEARTIFACT_REPO: fincorp-pip
+  ECR_REPO: fincorp-api-dev
+
+jobs:
+  build-scan-push:
+    name: Build · Scan · Push
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch CodeArtifact pip token
+        id: codeartifact
+        run: |
+          TOKEN=$(aws codeartifact get-authorization-token \
+            --domain "$CODEARTIFACT_DOMAIN" \
+            --domain-owner "$(aws sts get-caller-identity --query Account --output text)" \
+            --query authorizationToken \
+            --output text)
+          ENDPOINT=$(aws codeartifact get-repository-endpoint \
+            --domain "$CODEARTIFACT_DOMAIN" \
+            --domain-owner "$(aws sts get-caller-identity --query Account --output text)" \
+            --repository "$CODEARTIFACT_REPO" \
+            --format pypi \
+            --query repositoryEndpoint \
+            --output text)
+          # Construct pip index URL with embedded token (never logged)
+          PIP_INDEX_URL="${ENDPOINT/https:\/\//https://aws:${TOKEN}@}"
+          echo "pip_index_url=${PIP_INDEX_URL}" >> "$GITHUB_OUTPUT"
+          echo "::add-mask::${TOKEN}"
+
+      - name: Log in to Amazon ECR
+        id: ecr_login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: push
+        env:
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
+          TAG: ${{ steps.meta.outputs.image_tag }}
+          PIP_INDEX_URL: ${{ steps.codeartifact.outputs.pip_index_url }}
+        run: |
+          IMAGE_URI="${REGISTRY}/${ECR_REPO}:${TAG}"
+          docker build \
+            --build-arg APP_VERSION="${TAG}" \
+            --build-arg PIP_INDEX_URL="${PIP_INDEX_URL}" \
+            -t "${IMAGE_URI}" \
+            app/
+          docker push "${IMAGE_URI}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ECR image scan to complete
+        env:
+          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
+          TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          echo "Waiting for image scan on ${ECR_REPO}:${TAG}..."
+          aws ecr wait image-scan-complete \
+            --repository-name "${ECR_REPO}" \
+            --image-id imageTag="${TAG}" \
+            --region "${AWS_REGION}"
+
+      - name: CVE gate — fail on HIGH or CRITICAL findings
+        env:
+          TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          FINDINGS=$(aws ecr describe-image-scan-findings \
+            --repository-name "${ECR_REPO}" \
+            --image-id imageTag="${TAG}" \
+            --region "${AWS_REGION}" \
+            --query 'imageScanFindings.findingSeverityCounts' \
+            --output json)
+
+          echo "Scan severity counts: ${FINDINGS}"
+
+          HIGH=$(echo "${FINDINGS}" | jq '.HIGH // 0')
+          CRITICAL=$(echo "${FINDINGS}" | jq '.CRITICAL // 0')
+
+          echo "HIGH: ${HIGH}  CRITICAL: ${CRITICAL}"
+
+          if [ "$((HIGH + CRITICAL))" -gt 0 ]; then
+            echo "::error::Image blocked — ${CRITICAL} CRITICAL and ${HIGH} HIGH CVEs found."
+            echo "::error::Fix or suppress the findings before merging."
+            exit 1
+          fi
+
+          echo "CVE gate passed — no HIGH or CRITICAL findings."
