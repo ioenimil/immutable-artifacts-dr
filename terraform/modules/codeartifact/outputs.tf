@@ -15,5 +15,5 @@ output "repository_arn" {
 }
 
 output "repository_endpoint" {
-  value = aws_codeartifact_repository.fincorp_pip.repository_endpoint
+  value = data.aws_codeartifact_repository_endpoint.fincorp_pip.repository_endpoint
 }

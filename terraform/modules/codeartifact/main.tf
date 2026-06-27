@@ -25,21 +25,21 @@ resource "aws_codeartifact_repository" "fincorp_pip" {
   }
 }
 
-# Resource-based policy on the domain: allow token fetch for CI + task roles
+# The pip endpoint URL is exposed via a data source, not the repository resource.
+data "aws_codeartifact_repository_endpoint" "fincorp_pip" {
+  domain     = aws_codeartifact_domain.fincorp.domain
+  repository = aws_codeartifact_repository.fincorp_pip.repository
+  format     = "pypi"
+}
+
+# Resource-based policy on the domain: allow token fetch for CI role.
+# Only codeartifact:* actions are valid in a CodeArtifact resource-based policy.
+# sts:GetServiceBearerToken is an STS action and must live in the IAM role's
+# identity-based policy (already present in modules/iam/main.tf).
 data "aws_iam_policy_document" "domain_policy" {
   statement {
-    effect    = "Allow"
-    actions   = ["codeartifact:GetAuthorizationToken"]
-    principals {
-      type        = "AWS"
-      identifiers = [var.github_actions_role_arn]
-    }
-    resources = ["*"]
-  }
-
-  statement {
-    effect    = "Allow"
-    actions   = ["sts:GetServiceBearerToken"]
+    effect  = "Allow"
+    actions = ["codeartifact:GetAuthorizationToken"]
     principals {
       type        = "AWS"
       identifiers = [var.github_actions_role_arn]
