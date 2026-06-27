@@ -23,9 +23,12 @@ resource "aws_db_instance" "postgres" {
 
   multi_az               = false
   publicly_accessible    = false
-  deletion_protection    = false
+  deletion_protection    = false # intentionally off to allow DR simulation (delete-db-instance); set true in prod
   skip_final_snapshot    = true
 
+  # Native RDS automated backups disabled — AWS Backup (../backup module) handles
+  # snapshots and cross-region copy via copy_action. Both mechanisms cannot coexist
+  # without double-billing; AWS Backup gives us the cross-region copy we need.
   backup_retention_period = 0
 
   tags = {
