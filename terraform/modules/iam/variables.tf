@@ -14,14 +14,19 @@ variable "github_ref_pattern" {
   description = "Ref pattern to scope the OIDC trust (e.g. ref:refs/heads/main)"
 }
 
-variable "codeartifact_domain_arn" {
+# CodeArtifact ARNs are constructed locally (see locals in main.tf) rather than
+# consumed as module outputs — this breaks the iam <-> codeartifact dependency
+# cycle. Only the deterministic names are needed.
+variable "codeartifact_domain_name" {
   type        = string
-  description = "ARN of the CodeArtifact domain (to scope GetAuthorizationToken)"
+  default     = "fincorp"
+  description = "Name of the CodeArtifact domain (used to build its ARN)"
 }
 
-variable "codeartifact_repo_arn" {
+variable "codeartifact_repo_name" {
   type        = string
-  description = "ARN of the CodeArtifact pip repository"
+  default     = "fincorp-pip"
+  description = "Name of the CodeArtifact pip repository (used to build its ARN)"
 }
 
 variable "ecr_dev_repo_arn" {

@@ -14,28 +14,10 @@ module "vpc" {
 }
 
 # ============================================================
-# CodeArtifact — pip proxy (IAM role ARNs are outputs of `iam`)
-# Must be created before `iam` so we can pass domain/repo ARNs
-# to the IAM inline policy. We use a two-pass dependency here:
-#   ecr → iam → codeartifact (policy attachment),
-# but because iam needs codeartifact ARNs, we pass them directly
-# from the codeartifact module outputs via depends_on ordering.
-# ============================================================
-module "codeartifact" {
-  source = "./modules/codeartifact"
-
-  # Placeholder ARNs on first apply — populated after iam module creates roles.
-  # In practice both modules are created in the same apply; Terraform resolves the
-  # dependency graph and applies codeartifact first (no cycle), then wires the ARNs.
-  github_actions_role_arn = module.iam.github_actions_role_arn
-  ecs_task_role_arn       = module.iam.ecs_task_role_arn
-
-  depends_on = [module.iam]
-}
-
-# ============================================================
 # IAM — OIDC provider, GitHub Actions role, ECS task roles
-# Needs ECR repo ARNs and CodeArtifact ARNs for least-privilege policies.
+# Created before CodeArtifact: the CodeArtifact resource policies reference
+# these role ARNs as principals, so the roles must exist first. IAM builds the
+# CodeArtifact ARNs it needs locally (deterministic), so there is no cycle.
 # ============================================================
 module "iam" {
   source = "./modules/iam"
@@ -47,12 +29,18 @@ module "iam" {
   ecr_dev_repo_arn  = module.ecr.dev_repo_arn
   ecr_prod_repo_arn = module.ecr.prod_repo_arn
 
-  codeartifact_domain_arn = module.codeartifact.domain_arn
-  codeartifact_repo_arn   = module.codeartifact.repository_arn
-
   tf_state_bucket_arn = "arn:aws:s3:::${var.tf_state_bucket_name}"
+}
 
-  depends_on = [module.ecr, module.codeartifact]
+# ============================================================
+# CodeArtifact — pip proxy. Its resource policies grant the IAM roles above
+# (referenced via module.iam outputs), so it is applied after `iam`.
+# ============================================================
+module "codeartifact" {
+  source = "./modules/codeartifact"
+
+  github_actions_role_arn = module.iam.github_actions_role_arn
+  ecs_task_role_arn       = module.iam.ecs_task_role_arn
 }
 
 # ============================================================

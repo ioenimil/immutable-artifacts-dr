@@ -1,6 +1,13 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
+# CodeArtifact ARNs constructed from deterministic values to avoid a module
+# dependency cycle (iam needs these ARNs; codeartifact needs the role ARNs below).
+locals {
+  codeartifact_domain_arn = "arn:aws:codeartifact:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:domain/${var.codeartifact_domain_name}"
+  codeartifact_repo_arn   = "arn:aws:codeartifact:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:repository/${var.codeartifact_domain_name}/${var.codeartifact_repo_name}"
+}
+
 # ---------------------------------------------------------------------------
 # GitHub Actions OIDC provider
 # ---------------------------------------------------------------------------
@@ -96,7 +103,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     effect    = "Allow"
     actions   = ["codeartifact:GetAuthorizationToken"]
-    resources = [var.codeartifact_domain_arn]
+    resources = [local.codeartifact_domain_arn]
   }
 
   statement {
@@ -113,7 +120,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
   statement {
     effect    = "Allow"
     actions   = ["codeartifact:ReadFromRepository", "codeartifact:GetRepositoryEndpoint"]
-    resources = [var.codeartifact_repo_arn]
+    resources = [local.codeartifact_repo_arn]
   }
 
   # Terraform state S3 access
@@ -172,7 +179,7 @@ data "aws_iam_policy_document" "ecs_task_permissions" {
   statement {
     effect    = "Allow"
     actions   = ["codeartifact:ReadFromRepository", "codeartifact:GetRepositoryEndpoint"]
-    resources = [var.codeartifact_repo_arn]
+    resources = [local.codeartifact_repo_arn]
   }
 }
 
