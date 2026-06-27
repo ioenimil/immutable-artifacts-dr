@@ -78,11 +78,17 @@ jobs:
           docker push "${IMAGE_URI}"
           echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for ECR image scan to complete
+      - name: Trigger and wait for ECR image scan
         env:
-          REGISTRY: ${{ steps.ecr_login.outputs.registry }}
           TAG: ${{ steps.meta.outputs.image_tag }}
         run: |
+          # Explicitly start the scan — handles accounts where scan_on_push
+          # hasn't fired yet (race condition) or was overridden by registry config.
+          aws ecr start-image-scan \
+            --repository-name "${ECR_REPO}" \
+            --image-id imageTag="${TAG}" \
+            --region "${AWS_REGION}"
+
           echo "Waiting for image scan on ${ECR_REPO}:${TAG}..."
           aws ecr wait image-scan-complete \
             --repository-name "${ECR_REPO}" \

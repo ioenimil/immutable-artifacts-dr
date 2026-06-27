@@ -1,3 +1,18 @@
+# Force Basic (Clair) scanning at the registry level so that scan_on_push
+# triggers per-image scans and `aws ecr wait image-scan-complete` works in CI.
+# Enhanced scanning (Inspector) supersedes this setting and breaks the wait command.
+resource "aws_ecr_registry_scanning_configuration" "main" {
+  scan_type = "BASIC"
+
+  rule {
+    scan_frequency = "SCAN_ON_PUSH"
+    repository_filter {
+      filter      = "*"
+      filter_type = "WILDCARD"
+    }
+  }
+}
+
 locals {
   repos = ["fincorp-api-dev", "fincorp-api-prod"]
 }
