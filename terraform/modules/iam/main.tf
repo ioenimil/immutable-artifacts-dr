@@ -189,3 +189,43 @@ resource "aws_iam_role_policy" "ecs_task" {
   role   = aws_iam_role.ecs_task.id
   policy = data.aws_iam_policy_document.ecs_task_permissions.json
 }
+
+# ---------------------------------------------------------------------------
+# AWS Backup Default Service Role — required for RDS backup and restore jobs
+# ---------------------------------------------------------------------------
+resource "aws_iam_role" "backup_default" {
+  name = "AWSBackupDefaultServiceRole"
+  # Path must match the ARN referenced by the backup selection in
+  # modules/backup/main.tf (role/service-role/AWSBackupDefaultServiceRole),
+  # which is also AWS's conventional location for this role.
+  path = "/service-role/"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "backup.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "backup_default_backup" {
+  role       = aws_iam_role.backup_default.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+
+  # Re-attach if the role is ever replaced (replacement detaches policies in AWS
+  # but does not change this resource's tracked attributes, causing silent drift).
+  lifecycle {
+    replace_triggered_by = [aws_iam_role.backup_default]
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "backup_default_restore" {
+  role       = aws_iam_role.backup_default.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
+
+  lifecycle {
+    replace_triggered_by = [aws_iam_role.backup_default]
+  }
+}
