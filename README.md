@@ -94,7 +94,8 @@ The step-by-step simulation procedure is in [docs/dr-runbook.md](docs/dr-runbook
 ├── docs/
 │   ├── dr-runbook.md           # Step-by-step DR simulation runbook
 │   ├── fincorp_pipeline.png    # Workstream A architecture diagram
-│   └── fincorp_dr.png          # Workstream B architecture diagram
+│   ├── fincorp_dr.png          # Workstream B architecture diagram
+│   └── screenshots/            # Console evidence (CVE gate + DR failover walkthrough)
 ├── diagram-engine-room/
 │   └── main.py             # Python diagrams source (regenerates docs/*.png)
 ├── bootstrap.sh            # One-time S3 state bucket creation
@@ -197,6 +198,12 @@ To confirm the gate blocks vulnerable images:
 3. Observe the CI workflow fail at the **CVE gate** step with a list of findings
 4. Revert the base image change
 
+The screenshot below shows the gate in action: every step up to and including the image scan succeeds, then the **CVE gate** step fails the run because ECR reported `1 CRITICAL` and `3 HIGH` findings — the vulnerable image is blocked before it can ever be deployed.
+
+![CVE gate blocking a vulnerable image](docs/screenshots/failed-pipeline-because-of-image-scan.png)
+
+> A failed run here is the control working as designed — not a pipeline bug. The image is rejected at the gate, so no HIGH/CRITICAL vulnerability reaches ECS.
+
 ---
 
 ## Workstream B — How It Works
@@ -219,16 +226,62 @@ aws backup list-recovery-points-by-backup-vault \
   --output table
 ```
 
+![Primary instance available in Ireland](docs/screenshots/instance-available-status.png)
+*Normal state — the primary `fincorp-postgres` running and `Available` in eu-west-1 (Ireland).*
+
 ### DR simulation
 
-Follow the complete step-by-step guide in [docs/dr-runbook.md](docs/dr-runbook.md). The runbook covers:
+The full step-by-step procedure is in [docs/dr-runbook.md](docs/dr-runbook.md). The walkthrough below shows an actual end-to-end failover, captured from the AWS console.
 
-- Forcing an immediate backup before simulation (Step 0)
-- Deleting the primary RDS instance to simulate region failure (Step 1)
-- Identifying the latest recovery point in eu-central-1 (Step 2)
-- Starting a restore job from the DR vault (Step 3)
-- Validating the restored instance (Step 4)
-- Recording RTO against the 30-minute target (Step 5)
+**1 — Back up the primary.** An on-demand backup of `fincorp-postgres` completes in `fincorp-primary-vault` (eu-west-1).
+
+![Backup completed in the primary vault](docs/screenshots/Backup-exists-in-primary.png)
+*The on-demand backup succeeds (11:48). The earlier `02:00` row failed with **Access denied** — the scheduled run before the AWS Backup service role was corrected (see the note at the end of this section).*
+
+**2 — Replicate to the DR region.** The recovery point is copied from `fincorp-primary-vault` (eu-west-1) to `fincorp-dr-vault` (eu-central-1).
+
+![Cross-region copy to Frankfurt](docs/screenshots/cross-region-copy-to-frankfurt.png)
+*Initiating the cross-region copy of the recovery point to `fincorp-dr-vault` in Frankfurt.*
+
+**3 — Confirm the copy landed in Frankfurt.** The replicated recovery point now appears in the DR vault — independent of the primary region.
+
+![Recovery point in the DR vault](docs/screenshots/recovery-point-in-dr-region.png)
+*The recovery point present in `fincorp-dr-vault` (eu-central-1) — proof the backup survives a primary-region loss.*
+
+**4 — Simulate region failure.** The primary `fincorp-postgres` is deleted in eu-west-1. This marks the start of the RTO clock.
+
+![Deleting the primary database](docs/screenshots/deleting-primary-db-in-ireland.png)
+*The primary instance enters `Deleting` in Ireland — the "region failure" event.*
+
+**5 — Restore from the DR vault.** In eu-central-1, the replicated recovery point is selected and a restore is launched as `fincorp-postgres-dr`.
+
+![Restoring from the DR recovery point](docs/screenshots/click-restore-button.png)
+*Restoring the replicated recovery point from `fincorp-dr-vault` in Frankfurt.*
+
+**6 — Restore job runs in Frankfurt.** AWS Backup provisions the new instance from the recovery point.
+
+![Restore job in progress](docs/screenshots/restoring-db-backup.png)
+*The restore job runs in eu-central-1, provisioning `fincorp-postgres-dr`.*
+
+**7 — DR instance available.** The restored database comes up healthy in the DR region:
+
+![Restored database available in Frankfurt](docs/screenshots/restored-db-in-the-dr-region-Frankfurt.png)
+*`fincorp-postgres-dr` `Available` in eu-central-1 (Frankfurt) — the workload recovered into the DR region after the Ireland primary was destroyed.*
+
+```text
+$ aws rds describe-db-instances --db-instance-identifier fincorp-postgres-dr --region eu-central-1
+Class    : db.t3.micro
+Endpoint : fincorp-postgres-dr.c1s8k4yiin4y.eu-central-1.rds.amazonaws.com
+Engine   : postgres
+Version  : 16.13
+Status   : available
+```
+
+**RTO result:** restore initiated `14:17 UTC` → `fincorp-postgres-dr` reached `available` minutes later — **comfortably within the < 30 minute target**. Because the recovery point was already replicated to Frankfurt, the restore is the only time-critical path.
+
+> **Note — on-demand vs scheduled copy.** The plan's `copy_action` replicates **scheduled** backups to the DR vault automatically. This walkthrough used an **on-demand** backup, which does not inherit the plan's copy rule, so the cross-region copy (step 2) was triggered manually. The automated daily backup needs no manual copy step.
+>
+> **Note — AWS Backup service role.** The first scheduled run failed with *Access denied* because the `AWSBackupDefaultServiceRole` was absent, then mis-pathed, then missing its policy attachments. The role is now defined in Terraform (`modules/iam`) at `/service-role/` with both `AWSBackupServiceRolePolicyFor{Backup,Restores}` attached, so backups and restores succeed unattended.
 
 **Target RTO: < 30 minutes** from instance deletion to restored instance `available`.
 
